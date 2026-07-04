@@ -1,0 +1,23 @@
+# ESP-IDF build artifacts
+mssFW01/build/
+mssFW01/sdkconfig.old
+mssFW01/dependencies.lock
+mssFW01/managed_components/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Secrets
+.env
+*.pem
+credentials.json
