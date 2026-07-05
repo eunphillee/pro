@@ -1,3 +1,5 @@
+#include "alarm_config.h"
+#include "ble_config.h"
 #include "buzzer.h"
 #include "eeprom.h"
 #include "input.h"
@@ -6,10 +8,11 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "app_main";
 
-#define FW_VERSION      "0.1.0"
+#define FW_VERSION      "0.2.2"
 #define BOARD_NAME      "ESP32-S3-WROOM-1-N16R2"
 #define TARGET_NAME     "esp32s3"
 
@@ -23,7 +26,17 @@ static void print_boot_banner(void)
 
 void app_main(void)
 {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
     print_boot_banner();
+
+    ESP_ERROR_CHECK(alarm_config_init());
+    ESP_ERROR_CHECK(ble_config_start());
 
     ESP_ERROR_CHECK(buzzer_init());
     ESP_ERROR_CHECK(input_init());

@@ -21,6 +21,12 @@ bool lte_modem_is_ready(void);
 /** Queue an SMS (non-blocking; worker task performs AT send). */
 esp_err_t lte_modem_send_sms(const char *phone_number, const char *message);
 
+/** Queue SMS to multiple phone numbers (one attempt each). */
+esp_err_t lte_modem_send_sms_multi(const char *const *phone_numbers, int count, const char *message);
+
+/** Queue SMS to all configured alarm phone numbers from NVS. */
+esp_err_t lte_modem_send_alarm_sms(const char *message);
+
 /** Extended AT commands (manual invocation; not called at boot). */
 esp_err_t lte_modem_cmd_ati(void);
 esp_err_t lte_modem_cmd_csq(void);

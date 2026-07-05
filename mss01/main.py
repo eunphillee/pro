@@ -25,7 +25,7 @@ from pathlib import Path
 import serial
 from serial.tools import list_ports
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,13 +40,22 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QSizePolicy,
+    QSplitter,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from ble_settings import BleSettingsWidget
+
 
 APP_TITLE = "Guro Mulsan Cat.M1 SMS Tester"
+SETTINGS_ORG = "GuroMulsan"
+SETTINGS_APP = "CatM1SmsTester"
+SPLITTER_LEFT_MIN_WIDTH = 650
+SPLITTER_RIGHT_MIN_WIDTH = 350
+SPLITTER_LEFT_DEFAULT_RATIO = 0.58
 DEFAULT_BAUDRATE = "115200"
 READ_TIMEOUT_SEC = 0.15
 SMS_RESPONSE_TIMEOUT_SEC = 45
@@ -556,10 +565,11 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(1280, 900)
-        self.resize(1280, 900)
+        self.setMinimumSize(1100, 720)
+        self.resize(1280, 800)
 
         self.last_gps_fix: GpsFix | None = None
+        self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
         self.worker_thread = QThread(self)
         self.worker = SerialWorker()
@@ -588,18 +598,40 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt method name
         """Close the COM port and worker thread when the app exits."""
+        if hasattr(self, "main_splitter"):
+            self._settings.setValue("main_splitter", self.main_splitter.saveState())
+        if hasattr(self, "ble_settings_tab"):
+            self.ble_settings_tab.shutdown()
         self.worker.stop_worker()
         self.worker_thread.quit()
         self.worker_thread.wait(1500)
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt method name
+        """Apply default splitter sizes once the window has a real width."""
+        super().showEvent(event)
+        if getattr(self, "_splitter_initialized", False):
+            return
+        self._splitter_initialized = True
+        if not self._settings.contains("main_splitter"):
+            self._apply_default_splitter_sizes()
+
+    def _apply_default_splitter_sizes(self) -> None:
+        """Set the initial left/right width ratio for the main splitter."""
+        if not hasattr(self, "main_splitter"):
+            return
+        total = max(self.main_splitter.width(), SPLITTER_LEFT_MIN_WIDTH + SPLITTER_RIGHT_MIN_WIDTH)
+        left = max(int(total * SPLITTER_LEFT_DEFAULT_RATIO), SPLITTER_LEFT_MIN_WIDTH)
+        right = max(total - left, SPLITTER_RIGHT_MIN_WIDTH)
+        self.main_splitter.setSizes([left, right])
 
     def _build_ui(self) -> None:
         """Create all widgets and layouts."""
         root = QWidget()
         self.setCentralWidget(root)
         main_layout = QVBoxLayout(root)
-        main_layout.setContentsMargins(14, 12, 14, 14)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(6)
 
         header_layout = QHBoxLayout()
         header_layout.setSpacing(12)
@@ -607,14 +639,14 @@ class MainWindow(QMainWindow):
         logo_path = Path(__file__).with_name("guro_logo.png")
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path)).scaled(
-                84,
-                84,
+                56,
+                56,
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation,
             )
             logo_label.setPixmap(pixmap)
             self.setWindowIcon(QIcon(str(logo_path)))
-        logo_label.setFixedSize(84, 84)
+        logo_label.setFixedSize(56, 56)
         logo_label.setAlignment(Qt.AlignCenter)
 
         title_box = QVBoxLayout()
@@ -632,8 +664,8 @@ class MainWindow(QMainWindow):
 
         connection_group = QGroupBox("연결 설정")
         connection_layout = QGridLayout(connection_group)
-        connection_layout.setHorizontalSpacing(8)
-        connection_layout.setVerticalSpacing(8)
+        connection_layout.setHorizontalSpacing(6)
+        connection_layout.setVerticalSpacing(4)
 
         self.port_combo = QComboBox()
         self.port_combo.setMinimumWidth(220)
@@ -658,22 +690,38 @@ class MainWindow(QMainWindow):
         connection_layout.setColumnStretch(8, 1)
         main_layout.addWidget(connection_group)
 
-        content_layout = QHBoxLayout()
-        content_layout.setSpacing(10)
-        main_layout.addLayout(content_layout, stretch=1)
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("MainTabs")
+        self.tab_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
-        left_layout = QVBoxLayout()
-        left_layout.setSpacing(10)
-        content_layout.addLayout(left_layout, stretch=1)
+        left_panel = QWidget()
+        left_panel.setMinimumWidth(SPLITTER_LEFT_MIN_WIDTH)
+        left_panel_layout = QVBoxLayout(left_panel)
+        left_panel_layout.setContentsMargins(0, 0, 0, 0)
+        left_panel_layout.setSpacing(0)
+        left_panel_layout.addWidget(self.tab_widget)
+
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setObjectName("MainSplitter")
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(6)
+
+        lte_tab = QWidget()
+        lte_layout = QVBoxLayout(lte_tab)
+        lte_layout.setSpacing(8)
+        lte_layout.setContentsMargins(4, 4, 4, 4)
+
+        left_layout = lte_layout
 
         command_group = QGroupBox("기본 AT 명령 테스트")
         command_layout = QGridLayout(command_group)
-        command_layout.setHorizontalSpacing(8)
-        command_layout.setVerticalSpacing(8)
+        command_layout.setHorizontalSpacing(6)
+        command_layout.setVerticalSpacing(5)
         self.at_buttons: list[QPushButton] = []
         for index, command in enumerate(["AT", "ATI", "AT+CSQ", "AT+CREG?", "AT+COPS?"]):
             button = QPushButton(command)
-            button.setMinimumHeight(38)
+            button.setMinimumHeight(34)
+            button.setMaximumHeight(36)
             button.clicked.connect(lambda checked=False, cmd=command: self.send_command(cmd))
             self.at_buttons.append(button)
             command_layout.addWidget(button, index // 3, index % 3)
@@ -683,17 +731,45 @@ class MainWindow(QMainWindow):
 
         self.custom_command = QLineEdit()
         self.custom_command.setPlaceholderText("예: AT+CGATT?")
+        self.custom_command.setMinimumHeight(34)
         self.custom_send_button = QPushButton("직접 전송")
-        self.custom_send_button.setMinimumHeight(38)
+        self.custom_send_button.setMinimumHeight(34)
+        self.custom_send_button.setMaximumHeight(36)
         command_layout.addWidget(QLabel("직접 입력"), 2, 0)
         command_layout.addWidget(self.custom_command, 2, 1)
         command_layout.addWidget(self.custom_send_button, 2, 2)
         left_layout.addWidget(command_group)
 
+        sms_group = QGroupBox("문자 발송")
+        sms_layout = QGridLayout(sms_group)
+        self.phone_input = QLineEdit()
+        self.phone_input.setPlaceholderText("예: 01012345678")
+        self.message_input = QTextEdit()
+        self.message_input.setPlaceholderText("문자 내용을 입력하세요. 기본 텍스트 모드는 영문/숫자 테스트를 권장합니다.")
+        self.phone_input.setMinimumHeight(34)
+        self.message_input.setFixedHeight(72)
+        self.send_sms_button = QPushButton("SMS 보내기")
+        self.send_sms_button.setObjectName("PrimaryButton")
+        self.send_sms_button.setMinimumHeight(34)
+        self.send_sms_button.setMaximumHeight(36)
+
+        sms_layout.addWidget(QLabel("전화번호"), 0, 0)
+        sms_layout.addWidget(self.phone_input, 0, 1)
+        sms_layout.addWidget(QLabel("내용"), 1, 0)
+        sms_layout.addWidget(self.message_input, 1, 1)
+        sms_layout.addWidget(self.send_sms_button, 2, 1)
+        left_layout.addWidget(sms_group)
+        left_layout.addStretch()
+        self.tab_widget.addTab(lte_tab, "LTE 테스트")
+
+        gps_tab = QWidget()
+        gps_tab_layout = QVBoxLayout(gps_tab)
+        gps_tab_layout.setSpacing(8)
+        gps_tab_layout.setContentsMargins(4, 4, 4, 4)
         gps_group = QGroupBox("GPS 현재 위치")
         gps_layout = QGridLayout(gps_group)
-        gps_layout.setHorizontalSpacing(10)
-        gps_layout.setVerticalSpacing(10)
+        gps_layout.setHorizontalSpacing(6)
+        gps_layout.setVerticalSpacing(5)
 
         self.gps_interface_combo = QComboBox()
         self.gps_interface_combo.addItem("USB Modem (AT) — 권장", 4)
@@ -702,10 +778,15 @@ class MainWindow(QMainWindow):
         self.gps_start_button = QPushButton("GPS 시작")
         self.gps_stop_button = QPushButton("GPS 중단")
         self.gps_maps_button = QPushButton("지도에서 보기")
+        for gps_button in (self.gps_start_button, self.gps_stop_button, self.gps_maps_button):
+            gps_button.setMinimumHeight(36)
+            gps_button.setMaximumHeight(40)
+        self.gps_interface_combo.setMinimumHeight(34)
         self.gps_status_banner = QLabel("GPS 미시작")
         self.gps_status_banner.setObjectName("GpsStatusIdle")
         self.gps_status_banner.setAlignment(Qt.AlignCenter)
-        self.gps_status_banner.setMinimumHeight(64)
+        self.gps_status_banner.setMinimumHeight(47)
+        self.gps_status_banner.setMaximumHeight(57)
         self.gps_status_banner.setWordWrap(True)
 
         self.gps_hint_label = QLabel("연결 후 GPS 시작을 누르세요.")
@@ -722,7 +803,8 @@ class MainWindow(QMainWindow):
 
         for label in (self.gps_lat_value, self.gps_lon_value):
             label.setObjectName("GpsCoord")
-            label.setMinimumHeight(34)
+            label.setMinimumHeight(31)
+            label.setMaximumHeight(36)
             label.setAlignment(Qt.AlignCenter)
         for label in (
             self.gps_alt_value,
@@ -732,7 +814,8 @@ class MainWindow(QMainWindow):
             self.gps_accuracy_value,
         ):
             label.setObjectName("GpsValue")
-            label.setMinimumHeight(30)
+            label.setMinimumHeight(29)
+            label.setMaximumHeight(34)
             label.setAlignment(Qt.AlignCenter)
 
         gps_layout.addWidget(QLabel("출력 인터페이스"), 0, 0)
@@ -756,41 +839,37 @@ class MainWindow(QMainWindow):
         gps_layout.addWidget(QLabel("시각"), 7, 0)
         gps_layout.addWidget(self.gps_time_value, 7, 1, 1, 2)
         gps_layout.addWidget(self.gps_maps_button, 7, 3)
+        gps_tab_layout.addWidget(gps_group)
+        gps_tab_layout.addStretch()
+        self.tab_widget.addTab(gps_tab, "GPS 테스트")
 
-        center_layout = QVBoxLayout()
-        center_layout.setSpacing(10)
-        center_layout.addWidget(gps_group)
-        center_layout.addStretch()
-
-        sms_group = QGroupBox("문자 발송")
-        sms_layout = QGridLayout(sms_group)
-        self.phone_input = QLineEdit()
-        self.phone_input.setPlaceholderText("예: 01012345678")
-        self.message_input = QTextEdit()
-        self.message_input.setPlaceholderText("문자 내용을 입력하세요. 기본 텍스트 모드는 영문/숫자 테스트를 권장합니다.")
-        self.message_input.setFixedHeight(120)
-        self.send_sms_button = QPushButton("SMS 보내기")
-        self.send_sms_button.setObjectName("PrimaryButton")
-
-        sms_layout.addWidget(QLabel("전화번호"), 0, 0)
-        sms_layout.addWidget(self.phone_input, 0, 1)
-        sms_layout.addWidget(QLabel("내용"), 1, 0)
-        sms_layout.addWidget(self.message_input, 1, 1)
-        sms_layout.addWidget(self.send_sms_button, 2, 1)
-        left_layout.addWidget(sms_group)
-        left_layout.addStretch()
-
-        content_layout.addLayout(center_layout, stretch=1)
+        self.ble_settings_tab = BleSettingsWidget(self.append_log)
+        self.tab_widget.addTab(self.ble_settings_tab, "BLE 설정")
 
         log_group = QGroupBox("송신/수신 로그")
+        log_group.setMinimumWidth(SPLITTER_RIGHT_MIN_WIDTH)
+        log_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_layout = QVBoxLayout(log_group)
+        log_layout.setSpacing(4)
+        log_layout.setContentsMargins(6, 8, 6, 6)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.clear_log_button = QPushButton("Log Clear")
-        log_layout.addWidget(self.log_view)
+        self.clear_log_button.setMaximumHeight(30)
+        log_layout.addWidget(self.log_view, stretch=1)
         log_layout.addWidget(self.clear_log_button)
-        content_layout.addWidget(log_group, stretch=2)
+
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(log_group)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+
+        saved_splitter = self._settings.value("main_splitter")
+        if saved_splitter is not None:
+            self.main_splitter.restoreState(saved_splitter)
+
+        main_layout.addWidget(self.main_splitter, stretch=1)
 
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button.clicked.connect(self.connect_serial)
@@ -824,22 +903,52 @@ class MainWindow(QMainWindow):
                 background: #2b2b2b;
                 border: 1px solid #3d3d3d;
                 border-radius: 6px;
-                margin-top: 18px;
-                padding: 12px;
+                margin-top: 10px;
+                padding: 6px;
                 font-weight: 700;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
+                left: 8px;
+                padding: 0 4px;
                 color: #f0f0f0;
+            }
+            QTabWidget#MainTabs::pane {
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                background: #262626;
+                top: -1px;
+            }
+            QTabWidget#MainTabs QTabBar::tab {
+                background: #343434;
+                color: #ffffff;
+                padding: 6px 16px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                min-width: 90px;
+            }
+            QTabWidget#MainTabs QTabBar::tab:selected {
+                background: #d0d0d0;
+                color: #111111;
+                font-weight: 700;
+            }
+            QTabWidget#MainTabs QTabBar::tab:hover:!selected {
+                background: #4a4a4a;
+                color: #ffffff;
+            }
+            QSplitter#mainSplitter::handle {
+                background: #4a4a4a;
+            }
+            QSplitter#mainSplitter::handle:hover {
+                background: #1689e8;
             }
             QComboBox, QLineEdit, QTextEdit, QPlainTextEdit {
                 background: #1b1b1b;
                 border: 1px solid #3e3e3e;
                 border-radius: 4px;
                 color: #f4f4f4;
-                padding: 7px;
+                padding: 4px 6px;
                 selection-background-color: #1689e8;
             }
             QPlainTextEdit {
@@ -851,8 +960,8 @@ class MainWindow(QMainWindow):
                 border: 1px solid #4a4a4a;
                 border-radius: 4px;
                 color: #eeeeee;
-                padding: 8px 12px;
-                min-height: 20px;
+                padding: 4px 10px;
+                min-height: 16px;
             }
             QPushButton:hover {
                 background: #414141;
@@ -884,62 +993,62 @@ class MainWindow(QMainWindow):
             QLabel#GpsStatusIdle {
                 background: #3a3a3a;
                 border: 2px solid #555555;
-                border-radius: 8px;
-                padding: 10px 12px;
+                border-radius: 6px;
+                padding: 4px 8px;
                 color: #dddddd;
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: 700;
             }
             QLabel#GpsStatusRunning {
                 background: #4a3a12;
                 border: 2px solid #c9a227;
-                border-radius: 8px;
-                padding: 10px 12px;
+                border-radius: 6px;
+                padding: 4px 8px;
                 color: #ffe566;
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: 700;
             }
             QLabel#GpsStatusFixed {
                 background: #123d24;
                 border: 2px solid #2fbf71;
-                border-radius: 8px;
-                padding: 10px 12px;
+                border-radius: 6px;
+                padding: 4px 8px;
                 color: #8dffb8;
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: 700;
             }
             QLabel#GpsStatusWarn {
                 background: #4a2412;
                 border: 2px solid #e07b39;
-                border-radius: 8px;
-                padding: 10px 12px;
+                border-radius: 6px;
+                padding: 4px 8px;
                 color: #ffc58a;
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: 700;
             }
             QLabel#GpsHint {
                 color: #b8b8b8;
-                font-size: 10pt;
-                padding: 0 4px 4px 4px;
+                font-size: 9pt;
+                padding: 0 2px 2px 2px;
             }
             QLabel#GpsCoord {
                 background: #141414;
                 border: 2px solid #1689e8;
-                border-radius: 6px;
-                padding: 8px 10px;
+                border-radius: 4px;
+                padding: 4px 6px;
                 color: #ffffff;
                 font-family: Consolas, "Cascadia Mono", monospace;
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: 700;
             }
             QLabel#GpsValue {
                 background: #1b1b1b;
                 border: 1px solid #3e3e3e;
                 border-radius: 4px;
-                padding: 6px 8px;
+                padding: 3px 6px;
                 color: #f0f0f0;
                 font-family: Consolas, "Cascadia Mono", monospace;
-                font-size: 11pt;
+                font-size: 10pt;
                 font-weight: 600;
             }
             """

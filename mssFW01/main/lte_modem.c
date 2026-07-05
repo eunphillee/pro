@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "alarm_config.h"
 #include "board_pins.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -26,15 +27,17 @@ static const char *TAG = "lte_modem";
 #define LTE_SMS_QUEUE_LEN           2
 #define LTE_SMS_MSG_MAX_LEN         128
 #define LTE_SMS_PHONE_MAX_LEN       20
+#define LTE_SMS_MAX_PHONES          ALARM_PHONE_COUNT
 #define LTE_UCS2_HEX_MAX_LEN        512
 
 typedef struct {
-    char phone[LTE_SMS_PHONE_MAX_LEN];
+    char phones[LTE_SMS_MAX_PHONES][LTE_SMS_PHONE_MAX_LEN];
+    uint8_t phone_count;
     char message[LTE_SMS_MSG_MAX_LEN];
 } lte_sms_request_t;
 
 static QueueHandle_t s_sms_queue;
-static SemaphoreHandle_t s_sms_busy_mutex;
+static SemaphoreHandle_t s_sms_busy_sem;
 static SemaphoreHandle_t s_uart_mutex;
 static TaskHandle_t s_sms_worker_task;
 static volatile bool s_modem_ready = false;
@@ -485,12 +488,23 @@ static void lte_sms_worker_task(void *arg)
             continue;
         }
 
-        esp_err_t err = lte_modem_send_sms_blocking(request.phone, request.message);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "sms send failed: %s", esp_err_to_name(err));
+        for (uint8_t i = 0; i < request.phone_count; i++) {
+            if (request.phones[i][0] == '\0') {
+                continue;
+            }
+
+            esp_err_t err = lte_modem_send_sms_blocking(request.phones[i], request.message);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "sms send failed (%s): %s", request.phones[i], esp_err_to_name(err));
+            }
         }
 
-        xSemaphoreGive(s_sms_busy_mutex);
+        ESP_LOGI(TAG, "sms worker after send: before s_sms_busy_sem give");
+        if (xSemaphoreGive(s_sms_busy_sem) != pdTRUE) {
+            ESP_LOGW(TAG, "sms worker: s_sms_busy_sem give failed (already available?)");
+        } else {
+            ESP_LOGI(TAG, "sms worker after send: after s_sms_busy_sem give (ready for next)");
+        }
     }
 }
 
@@ -502,11 +516,13 @@ static esp_err_t lte_sms_worker_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_sms_busy_mutex = xSemaphoreCreateMutex();
-    if (s_sms_busy_mutex == NULL) {
-        ESP_LOGE(TAG, "failed to create SMS mutex");
+    s_sms_busy_sem = xSemaphoreCreateBinary();
+    if (s_sms_busy_sem == NULL) {
+        ESP_LOGE(TAG, "failed to create SMS busy semaphore");
         return ESP_ERR_NO_MEM;
     }
+    /* Binary semaphore starts empty; give once so first xSemaphoreTake(0) succeeds. */
+    xSemaphoreGive(s_sms_busy_sem);
 
     s_uart_mutex = xSemaphoreCreateMutex();
     if (s_uart_mutex == NULL) {
@@ -602,7 +618,13 @@ esp_err_t lte_modem_prepare_for_sms(void)
 
 esp_err_t lte_modem_send_sms(const char *phone_number, const char *message)
 {
-    if (s_sms_queue == NULL || phone_number == NULL || message == NULL) {
+    const char *phones[1] = { phone_number };
+    return lte_modem_send_sms_multi(phones, 1, message);
+}
+
+esp_err_t lte_modem_send_sms_multi(const char *const *phone_numbers, int count, const char *message)
+{
+    if (s_sms_queue == NULL || phone_numbers == NULL || message == NULL || count <= 0) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -611,22 +633,64 @@ esp_err_t lte_modem_send_sms(const char *phone_number, const char *message)
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (xSemaphoreTake(s_sms_busy_mutex, 0) != pdTRUE) {
+    if (xSemaphoreTake(s_sms_busy_sem, 0) != pdTRUE) {
         ESP_LOGW(TAG, "sms busy, skip duplicate request");
         return ESP_ERR_INVALID_STATE;
     }
 
     lte_sms_request_t request = {0};
-    strncpy(request.phone, phone_number, sizeof(request.phone) - 1);
+    int added = 0;
+
+    for (int i = 0; i < count && added < LTE_SMS_MAX_PHONES; i++) {
+        if (phone_numbers[i] == NULL || phone_numbers[i][0] == '\0') {
+            continue;
+        }
+        strncpy(request.phones[added], phone_numbers[i], sizeof(request.phones[added]) - 1);
+        added++;
+    }
+
+    if (added == 0) {
+        xSemaphoreGive(s_sms_busy_sem);
+        ESP_LOGW(TAG, "sms skipped: no phone numbers configured");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    request.phone_count = (uint8_t)added;
     strncpy(request.message, message, sizeof(request.message) - 1);
 
     if (xQueueSend(s_sms_queue, &request, 0) != pdTRUE) {
-        xSemaphoreGive(s_sms_busy_mutex);
+        xSemaphoreGive(s_sms_busy_sem);
         ESP_LOGW(TAG, "sms queue full");
         return ESP_ERR_NO_MEM;
     }
 
+    ESP_LOGI(TAG, "sms queued: phones=%d (s_sms_busy_sem taken)", added);
+
     return ESP_OK;
+}
+
+esp_err_t lte_modem_send_alarm_sms(const char *message)
+{
+    const char *phones[ALARM_PHONE_COUNT];
+    int count = 0;
+
+    if (message == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (int i = 0; i < ALARM_PHONE_COUNT; i++) {
+        phones[i] = alarm_config_get_phone(i);
+        if (phones[i][0] != '\0') {
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        ESP_LOGW(TAG, "sms skipped: no phone numbers configured");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return lte_modem_send_sms_multi(phones, ALARM_PHONE_COUNT, message);
 }
 
 esp_err_t lte_modem_powerkey_pulse(void)

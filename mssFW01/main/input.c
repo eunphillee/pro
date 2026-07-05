@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "alarm_config.h"
 #include "board_pins.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -11,16 +12,7 @@
 
 static const char *TAG = "input";
 
-#define SMS_RECIPIENT_PHONE     "01026844484"
-
 #define MSG_NORMAL          "정상 상태 또는 입력 없음"
-#define MSG_IN1_ONLY        "침수위험(신천IC 배수펌프 #4,5)"
-#define MSG_IN2_ONLY        "대피하세요(신천IC 배수펌프 #4,5)"
-#define MSG_IN3_ONLY        "가스 이상 감지(O2)"
-#define MSG_IN1_IN2         "가스 이상 감지(CO)"
-#define MSG_IN2_IN3         "가스 이상 감지(H2S)"
-#define MSG_IN1_IN3         "가스 이상 감지(LEL)"
-#define MSG_IN1_IN2_IN3     "가스 이상 감지(CO2)"
 
 static input_event_t s_input_event;
 static uint8_t s_prev_state_mask = 0;
@@ -46,34 +38,32 @@ void input_read_state(input_state_t *out)
     out->in3_on = (out->raw_in3 == 0);
 }
 
+static int input_mask_to_message_index(uint8_t mask)
+{
+    switch (mask) {
+    case 1: return 0;
+    case 2: return 1;
+    case 4: return 2;
+    case 3: return 3;
+    case 6: return 4;
+    case 5: return 5;
+    case 7: return 6;
+    default: return -1;
+    }
+}
+
 const char *input_get_alarm_message(bool in1_on, bool in2_on, bool in3_on)
 {
-    if (!in1_on && !in2_on && !in3_on) {
+    uint8_t mask = (uint8_t)((in1_on ? 1U : 0U) |
+                             (in2_on ? 2U : 0U) |
+                             (in3_on ? 4U : 0U));
+    int index = input_mask_to_message_index(mask);
+
+    if (index < 0) {
         return MSG_NORMAL;
     }
-    if (in1_on && !in2_on && !in3_on) {
-        return MSG_IN1_ONLY;
-    }
-    if (!in1_on && in2_on && !in3_on) {
-        return MSG_IN2_ONLY;
-    }
-    if (!in1_on && !in2_on && in3_on) {
-        return MSG_IN3_ONLY;
-    }
-    if (in1_on && in2_on && !in3_on) {
-        return MSG_IN1_IN2;
-    }
-    if (!in1_on && in2_on && in3_on) {
-        return MSG_IN2_IN3;
-    }
-    if (in1_on && !in2_on && in3_on) {
-        return MSG_IN1_IN3;
-    }
-    if (in1_on && in2_on && in3_on) {
-        return MSG_IN1_IN2_IN3;
-    }
 
-    return MSG_NORMAL;
+    return alarm_config_get_message(index);
 }
 
 const input_event_t *input_get_event(void)
@@ -123,8 +113,8 @@ static void input_dispatch_sms(uint8_t mask, const char *message)
         return;
     }
 
-    esp_err_t err = lte_modem_send_sms(SMS_RECIPIENT_PHONE, message);
-    if (err != ESP_OK) {
+    esp_err_t err = lte_modem_send_alarm_sms(message);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
         ESP_LOGE(TAG, "sms send failed: %s", esp_err_to_name(err));
     }
 }
@@ -137,8 +127,8 @@ void input_notify_modem_ready(void)
 
     if (s_pending_mask == s_last_sent_mask) {
         ESP_LOGI(TAG, "flushing pending SMS (mask=%u): %s", s_pending_mask, s_pending_message);
-        esp_err_t err = lte_modem_send_sms(SMS_RECIPIENT_PHONE, s_pending_message);
-        if (err != ESP_OK) {
+        esp_err_t err = lte_modem_send_alarm_sms(s_pending_message);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) {
             ESP_LOGE(TAG, "pending sms send failed: %s", esp_err_to_name(err));
         }
     }

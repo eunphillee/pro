@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "app_main.c"
+        "alarm_config.c"
+        "ble_config.c"
         "buzzer.c"
         "input.c"
         "eeprom.c"
@@ -11,4 +13,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_uart
         esp_driver_i2c
+        nvs_flash
+        bt
+        json
 )
